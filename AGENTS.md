@@ -1,297 +1,477 @@
-# AGENTS.md — AI Coding Agent Guide
+# AGENTS.md — AI Coding Agent Guide for obsidian-terminal
 
-This guide provides clear, actionable instructions for AI coding agents working in the `obsidian-plugin-template` codebase. Follow these rules for productivity, accuracy, and maintainability.
+This guide provides clear, actionable instructions for AI coding agents working in the `obsidian-terminal` codebase. This is an Obsidian plugin that integrates consoles, shells, and terminals into Obsidian.
 
-## 1. Architecture Overview
+## 1. Project Overview
 
-- **Plugin Structure:**
-  - Core logic in `src/` (entry: `src/main.ts`, class: `PLACEHOLDERPlugin`).
-- **Settings & Localization:**
-  - Settings: `src/settings.ts`, `src/settings-data.ts`
-  - Localization: `assets/locales.ts`, per-locale JSON in `assets/locales/`
-- **Build System:**
-  - Custom scripts in `scripts/` (not webpack/rollup)
-  - Main: `scripts/build.mjs`, Install: `scripts/obsidian-install.mjs`
-- **External Library:**
-  - Uses `@polyipseity/obsidian-plugin-library` for context, i18n, settings, UI
+**obsidian-terminal** is an Obsidian plugin that provides:
 
-## 2. Developer Workflows
+- Integrated terminal emulation using xterm.js
+- External terminal launching (platform-specific)
+- An emulated developer console usable on all platforms
+- Support for multiple terminal profiles
+- History restoration and terminal state persistence
+
+### Technology Stack
+
+| Component | Technology |
+| --------- | ---------- |
+| Frontend | TypeScript, Svelte |
+| Terminal Engine | xterm.js with addons (canvas, webgl, ligatures, search, unicode11, web-links) |
+| Backend (Python) | Python 3.9+, psutil, pywinctl, uvloop/winloop |
+| Build Tool | esbuild with custom scripts |
+| Testing | Vitest (TypeScript), pytest (Python) |
+| Package Manager | pnpm (preferred) or npm |
+| Python Environment | uv |
+
+### Key Dependencies
+
+- `@polyipseity/obsidian-plugin-library`: Core library for Obsidian plugin functionality
+- `@xterm/xterm` and addons: Terminal emulation
+- `svelte`: UI framework
+- `i18next`: Internationalization
+- `acorn` + `espree`: JavaScript parsing for developer console
+
+## 2. Architecture
+
+### Directory Structure
+
+```text
+src/
+├── main.ts                    # Plugin entry point (TerminalPlugin class)
+├── settings-data.ts           # Settings interfaces and validation (.fix functions)
+├── settings.ts                # Settings UI (SettingTab)
+├── documentations.ts          # Documentation management
+├── icons.ts                   # Icon registration
+├── import.ts                  # Dynamic import helpers
+├── magic.ts                   # Constants and magic numbers
+├── modals.ts                  # Modal dialogs
+├── patch.ts                   # Logging interception patches
+├── utils.ts                   # Utility functions
+├── @types/                    # Type definitions
+│   ├── obsidian-terminal.ts   # Public API types
+│   └── *.ts                   # Internal type definitions
+└── terminal/                  # Terminal implementation
+    ├── load.ts                # Terminal feature registration
+    ├── view.ts                # Terminal view (Obsidian ItemView)
+    ├── emulator.ts            # XtermTerminalEmulator wrapper
+    ├── emulator-addons.ts     # Custom xterm.js addons
+    ├── pseudoterminal.ts      # Pseudoterminal implementations
+    ├── spawn.ts               # Terminal spawning logic
+    ├── options.ts             # Terminal options merging
+    ├── profile-presets.ts     # Default profile configurations
+    ├── profile-properties.ts  # Profile type definitions
+    ├── utils.ts               # Terminal utilities
+    ├── unix_pseudoterminal.py # Unix PTY helper (Python)
+    └── win32_resizer.py       # Windows terminal resizer (Python)
+
+assets/
+├── locales.ts                 # Localization setup
+└── locales/                   # Translation files (51 languages)
+    └── */translation.json
+
+scripts/                       # Build and utility scripts
+├── build.mjs                  # Main esbuild script
+├── obsidian-install.mjs       # Install to vault script
+├── version.mjs                # Version bumping
+├── sync-locale-keys.mjs       # Locale synchronization
+└── utils.mjs                  # Script utilities
+
+tests/                         # Test suite
+├── *.spec.ts                  # Unit tests
+├── *.test.ts                  # Integration tests
+├── mocks/                     # Test mocks
+│   └── obsidian.ts            # Obsidian API mock
+├── setup.ts                   # Test setup
+├── scripts/                   # Script tests
+└── support/                   # Test helpers
+```
+
+### Core Classes
+
+1. **TerminalPlugin** (`src/main.ts`): Main plugin class extending Obsidian's `Plugin`
+   - Manages lifecycle: language, settings, terminal views
+   - Implements `PluginContext<Settings, LocalSettings>`
+
+2. **TerminalView** (`src/terminal/view.ts`): Obsidian view for terminal display
+   - Extends `ItemView`
+   - Manages xterm.js terminal instance
+   - Handles terminal lifecycle (spawn, resize, destroy)
+
+3. **XtermTerminalEmulator** (`src/terminal/emulator.ts`): Wrapper around xterm.js
+   - Manages terminal addons
+   - Handles input/output piping
+
+4. **Pseudoterminal classes** (`src/terminal/pseudoterminal.ts`):
+   - `Pseudoterminal`: Interface for PTY implementations
+   - `DeveloperConsolePseudoterminal`: In-app JS console
+   - `WindowsPseudoterminal`: Windows shell integration
+   - `UnixPseudoterminal` (via Python script): Unix PTY
+
+5. **Settings** (`src/settings-data.ts`):
+   - `Settings`: Main plugin settings
+   - `Settings.Profile`: Terminal profile definitions
+   - `Settings.fix()`: Validation/normalization function
+
+### Profile System
+
+Terminal profiles define how terminals are spawned:
+
+| Profile Type       | Description                           |
+| ------------------ | ------------------------------------- |
+| `integrated`       | Runs shells inside Obsidian using PTY |
+| `external`         | Launches external terminal emulators  |
+| `developerConsole` | In-app JavaScript console             |
+| `empty`            | Placeholder/deleted profiles          |
+
+Profile presets are defined in `src/terminal/profile-presets.ts`.
+
+## 3. Developer Workflows
 
 > **Note:** **Always prefer `pnpm` over `npm`** for development workflows. Use `npm` only when `pnpm` is unavailable.
 
-- **Setup**
-  - `pnpm install` — install dependencies and set up Git hooks (preferred).
-  - Fallback: `npm install` (only if pnpm is not available).
+### Setup
 
-- **Build & Install**
-  - `pnpm build` — production build (runs checks then builds).
-  - `pnpm run build:dev` — development/watch build.
-  - `pnpm run obsidian:install:force <vault>` — force install using `build:force` (skips format).
+```bash
+pnpm install           # Install dependencies and set up Git hooks
+```
 
-### Agent quick-start (AI agents)
+### Build Commands
 
-- Quick commands (exact):
-  - `pnpm install` — install dependencies (preferred)
-  - `pnpm run build:dev` — development / watch build
-  - `pnpm build` — production build (runs checks then builds)
-  - `pnpm exec vitest run "tests/**/*.spec.{js,ts,mjs}"` — run unit tests (non-interactive)
-  - `pnpm test` — run full test suite
+```bash
+pnpm build             # Production build (runs checks then builds)
+pnpm run build:dev     # Development/watch build
+pnpm run build:force   # Build without checks
+```
 
-- Read first: `AGENTS.md`, `src/main.ts`, `src/settings-data.ts`, `src/settings.ts`, `src/terminal/load.ts`, `assets/locales.ts`, `scripts/build.mjs`, `vitest.config.mts`
-- Note: `scripts/obsidian-install.mjs` now fails gracefully when `manifest.json` is missing or invalid and prints a concise error message rather than emitting a full stack trace. This makes local tests and CI logs cleaner and eases assertions for failure cases.
-  - `pnpm run check` — eslint + prettier(check) + markdownlint.
-  - `pnpm run format` — eslint --fix, prettier --write, markdownlint --fix.
+### Testing
 
-- **Versioning**
-  - Use `changesets` for PRs; version lifecycle scripts are configured (`version` / `postversion`).
+```bash
+pnpm test              # Run full test suite (Vitest + pytest)
+pnpm run test:vitest   # Run TypeScript tests only
+pnpm run test:py       # Run Python tests only
+pnpm run test:watch    # Interactive test watcher (not for CI)
+```
 
-- **Localization**
-  - Add locales by copying `assets/locales/en/translation.json` and updating `assets/locales/*/language.json` as needed. See `assets/locales/README.md` for conventions.
+**Test naming conventions:**
 
----
+- `*.spec.ts` — Unit tests (BDD-style, fast, isolated)
+- `*.test.ts` — Integration tests (TDD-style, may use filesystem)
 
-## Scripts (package.json) 🔧
+### Linting and Formatting
 
-Quick reference for scripts in `package.json`. **Always prefer `pnpm` over `npm`.**
+```bash
+pnpm run check         # Run all checks (ESLint, Prettier, markdownlint, Pyright)
+pnpm run check:eslint  # TypeScript/JavaScript linting
+pnpm run check:prettier # Format checking
+pnpm run check:md      # Markdown linting
+pnpm run check:py      # Python linting (ruff + pyright)
 
-- `build` — runs `format` then `build:force`.
-- `build:force` — runs `node scripts/build.mjs` (internal build implementation).
-- `build:dev` — runs `build:force` in dev mode (`pnpm run build:force -- dev`).
-- `obsidian:install` — runs `build` then `node scripts/obsidian-install.mjs` (install to vault).
-- `obsidian:install:force` — runs `build:force` then `node scripts/obsidian-install.mjs`.
-- `check` — runs `check:eslint`, `check:prettier`, `check:md`.
-- `check:eslint` — `eslint --cache --max-warnings=0`.
-- `check:prettier` — `prettier --check .`.
-- `check:md` — `markdownlint-cli2`.
-- `format` — runs `format:eslint`, `format:prettier`, `format:md`.
-- `format:eslint` — `eslint --cache --fix`.
-- `format:prettier` — `prettier --write .`.
-- `format:md` — `markdownlint-cli2 --fix`.
-- `commitlint` — `commitlint --from=origin/main --to=HEAD`.
-- `prepare` — runs `husky` to set up Git hooks.
-- `version` / `postversion` — version lifecycle scripts (`node scripts/version.mjs`, `node scripts/version-post.mjs`).
+pnpm run format        # Auto-fix all formatting
+pnpm run format:eslint # Fix ESLint issues
+pnpm run format:prettier # Format with Prettier
+pnpm run format:md     # Fix Markdown
+pnpm run format:py     # Format Python (ruff)
+```
 
-> CI tip: Use `pnpm install --frozen-lockfile` in CI for deterministic installs.
+### Obsidian Installation
 
-## Testing ✅
+```bash
+pnpm obsidian:install /path/to/vault       # Build and install
+pnpm run obsidian:install:force /path/to/vault  # Skip checks
+```
 
-- **Test runner:** Vitest (fast, TypeScript support).
-- **Test file conventions and meaning:**
-  - `*.spec.{ts,js,mjs}` — **Unit tests (BDD-style)**: prefer a Behavior-Driven mindset; tests describe what the code should do, focus on small, isolated units, and should be fast and hermetic
-  - `*.test.{ts,js,mjs}` — **Integration tests (TDD-style)**: prefer a Test-Driven mindset for integration verification; tests exercise multiple units or real integrations (filesystem, build, etc.).
+### Version Management
 
-  > Note: In JavaScript the extensions `*.spec` and `*.test` are tooling-equivalent; this project adopts the **semantic distinction** above to encourage appropriate test design (BDD for `spec`, TDD/integration for `test`).
+This project uses [`changesets`](https://github.com/changesets/changesets) for changelog management:
 
-**Test path guidance:** When referencing package scripts from tests, prefer relative paths that resolve to the package-local `scripts/` directory (for example, `../../scripts/...` from `tests/scripts`) instead of using repository-root `scripts/` paths. This keeps tests package-scoped, hermetic, and easier to run in isolation.
+```bash
+pnpm run version       # Bump version using changesets
+```
 
-- **Config:** Minimal config is in `vitest.config.mts` and includes both `*.spec.*` and `*.test.*` globs; add inline comments to that file if you change test behavior or providers.
+## 4. Coding Conventions
 
-### Vitest / `vi` best practices (tests) ✅
+### TypeScript
 
-- Prefer `vi.fn()` for spies and stubs instead of inline functions so tests can inspect calls and reset behavior easily.
-  - For async behavior, prefer `vi.fn().mockResolvedValue(x)` or `vi.fn().mockRejectedValue(err)` over `() => Promise.resolve()` / `() => Promise.reject()` to make intent explicit and improve readability.
-- Use `vi.doMock` / `vi.mock` with `vi.resetModules()` to isolate module-level mocks. When restoring spies/mocks between tests use `vi.restoreAllMocks()` (commonly in an `afterEach`).
-- Use `vi.spyOn()` to observe calls to global objects (console, process) rather than reassigning globals directly.
-- For timer-based tests, prefer `vi.useFakeTimers()` and `vi.runAllTimers()` / `vi.advanceTimersByTime()` to make assertions deterministic.
-- Prefer `vi.mocked(...)` for typed module mocks where available to access typed members and avoid `any` casts.
-
-These conventions improve test clarity, make failures easier to diagnose, and keep suites hermetic and parallelizable.
-
-Helpful local resources:
-
-- `tests/README.md` — Examples and recommended patterns for `vi` usage (async stubs, fake timers, spying globals).
-
-- **Run locally:**
-  - Full (default): `pnpm test` (prefer over `npm run test`) — runs both unit and integration tests with coverage.
-  - Unit-only (Vitest CLI): `pnpm exec vitest run "tests/**/*.spec.{js,ts,mjs}" --coverage` — fast, good for PR iteration.
-  - Integration-only (Vitest CLI): `pnpm exec vitest run "tests/**/*.test.{js,ts,mjs}" --coverage` — use for longer-running integration suites.
-  - Interactive / watch: `pnpm run test:watch` (prefer over `npm run test:watch`).
-
-  > **Agent note — vitest CLI:** `vitest` without a subcommand defaults to interactive/watch mode. **Agents must never run Vitest in watch mode**; always use `vitest run <options>` or add the `--run` option so tests execute non-interactively (example: `pnpm exec vitest --run "tests/**/*.spec.{js,ts,mjs}"`).
-
-- **Git hooks & CI:**
-  - Pre-push: `.husky/pre-push` runs `pnpm test` (prefer over `npm run test`) — failing tests will block pushes.
-  - CI: CI jobs run the full test suite (both unit and integration). If adding slow or flaky integration tests, mark them clearly (folder or filename) and justify in the PR description; prefer to keep the default suite fast.
-
-- **Guidelines for agents & contributors:**
-  - Unit tests must be deterministic and hermetic; mock external dependencies and avoid network I/O.
-  - Integration tests may use fixtures or local resources but must be isolated and documented.
-  - Keep tests small and focused — single assertion / behavior per test where reasonable.
-  - Test file structure: follow a **one test file per source file** convention. Place tests so they mirror the source directory structure under `tests/` for both unit (spec) tests and integration (test) suites. Name tests after the source file, e.g., `src/utils/foo.js` -> `tests/utils/foo.spec.js` (unit and integration). Only split a test across multiple files if a single test file would be unreasonably large; document the reason in the test file header.
-  - When changing test infra (adding coverage providers, changing runtimes, or altering hooks), update `AGENTS.md` with rationale and practical instructions so other agents can follow the new workflow.
-
-- **PR checklist (for agents):**
-  1. Add/modify tests to cover behavior changes and follow the **one test file per source file** convention.
-  2. Run `pnpm exec vitest run "tests/**/*.spec.{js,ts,mjs}"` locally for fast verification and `pnpm test` for the full suite.
-  3. Keep tests parallelizable and idempotent.
-  4. Document any infra changes in `AGENTS.md`.  
-
-If you need help designing a test or mocking a dependency, ask for a short example to be added to `tests/fixtures/`.
-
-## 3. Coding Conventions
-
-**TypeScript Types:**
-
-- Do **not** use the TypeScript `any` type. Prefer `unknown` over `any`. When accepting unknown inputs, validate or use type guards to narrow `unknown` before use. If `any` is truly unavoidable, document the reason and add tests that assert safety.
-- **Never use `as` casting.** Avoid `value as Foo` in production code — prefer safe alternatives such as:
-  - runtime type guards (e.g. `function isFoo(v: unknown): v is Foo`) and narrowing checks;
-  - explicit generics / factory functions that preserve typing;
-  - returning `unknown` from untrusted boundaries and narrowing at the call site.
-  If a single `as` cast is unavoidable add a comment explaining why, and add a unit test that exercises the runtime assumptions.
-- **Make code type-checking friendly.** Prefer explicit types for exported APIs (return types and parameter types), keep public interfaces small and well-typed, prefer discriminated unions for runtime branching, and avoid deeply inferred/complex anonymous types at package boundaries. This makes `tsc` errors actionable and helps downstream consumers.
-- **Prefer `interface` for object shapes:** Prefer `interface Foo { ... }` rather than `type Foo = { ... }` for object-shaped declarations when possible. Interfaces are typically better for incremental TypeScript performance (caching and declaration merging) and work well with extension and declaration merging patterns.
-- When you need union, mapped, or conditional types, `type` aliases remain appropriate. Document non-trivial type-level logic with a brief comment so readers understand the intent and tradeoffs.
+- **No `any` type**: Prefer `unknown` with type guards
+- **No `as` casting**: Use runtime type guards instead
+- **Prefer `interface` for object shapes**: Better for incremental TypeScript performance
+- **Strict null checks enabled**: Always handle null/undefined cases
+- **Use `.fix()` functions for validation**: See `Settings.fix()`, `LocalSettings.fix()` patterns
 
 Example:
 
-```ts
-// preferred for object shapes
-interface Settings {
-  openChangelogOnUpdate: boolean;
-  noticeTimeout: number;
+```typescript
+// Good: Interface for object shapes
+interface TerminalOptions {
+  fontSize?: number;
+  cursorStyle?: 'block' | 'bar' | 'underline';
 }
 
-// prefer a type guard over `as` casting
-function isSettings(v: unknown): v is Settings {
-  return (
-    typeof v === "object" &&
-    v !== null &&
-    "openChangelogOnUpdate" in v &&
-    typeof (v as any).openChangelogOnUpdate === "boolean"
-  );
+// Good: Type guard instead of casting
+function isProfile(obj: unknown): obj is Settings.Profile {
+  return typeof obj === 'object' && obj !== null && 'type' in obj;
 }
-
-// acceptable use of `type` for advanced type composition
-type JsonValue = string | number | boolean | null | JsonObject | JsonArray;
 ```
 
-**Commit Messages:**
+### Imports
 
-- All commit messages **must** follow the Conventional Commits standard.
-- **Header should be ≤ 72 characters (use 72 as a human-friendly buffer; tooling still accepts up to 100).**
-- **Body lines must be hard-wrapped at 100 characters** (enforced by commitlint/husky). Prefer 72 for messages intended for humans.
-- See `.agents/instructions/commit-message.instructions.md` for up-to-date rules, examples, and a short agent-oriented summary.
-- Run `pnpm run commitlint` (prefer over `npm run commitlint`) locally to validate message format before pushing; Husky will run checks on `prepare`/pre-push as configured.
+- **Always use top-level static imports** where possible
+- Place imports at the very top of the file (after any file-level doc comment)
+- Use `import type` for type-only imports
+- Dynamic imports (`await import()`) only when necessary (module isolation, mocks)
 
-  **Example (compliant):**
+### Python
 
-  ```text
-  refactor(eslint): remove @eslint/compat, eslintrc, js; update Prettier rules
+- **Minimum version**: Python 3.9+
+- **Type checking**: Pyright in strict mode
+- **Linting**: Ruff with line-length 88
+- **Every module must declare `__all__`** (tuple, not list)
+- **Windows-specific dependencies**: psutil, pywinctl, typing_extensions
 
-  - Removed @eslint/compat, @eslint/eslintrc, @eslint/js from config and lockfiles
-  - Updated Prettier to v3 and adjusted markdownlint config for new plugin
-  - Cleaned up ESLint overrides and Svelte linting comments
+Example:
 
-  Refs: lint config modernization
-  ```
+```python
+__all__ = ("spawn_terminal", "resize_terminal")
 
-- **Lifecycle:** Register/unload all major managers in `PLACEHOLDERPlugin.onload()`
-
-## 4. Integration Points
-
-- **Obsidian API:** Peer dependency, entry/manifest must match plugin requirements
-- **@polyipseity/obsidian-plugin-library:** Central for context, i18n, settings, UI, utils
-- **External Translations:** Some from `polyipseity/obsidian-plugin-library`
-
-## 5. Key Files & Directories
-
-- `src/main.ts` — Plugin entry, lifecycle, context
-- `src/settings.ts` / `src/settings-data.ts` — Settings UI/data
-- `assets/locales.ts` / `assets/locales/` — Localization logic/files
-- `scripts/build.mjs` / `scripts/obsidian-install.mjs` — Build/install scripts
-- `README.md` / `assets/locales/README.md` — Contributor/translation instructions
-- `.agents/instructions/` — Task/file-specific instructions
-- `.agents/skills/` — Agent skills for specialized workflows
-
-**Python version:** Runtime requirement is 3.9 or above. For development we use 3.9 (e.g. `.python-version`, Pyright `pythonVersion` in `pyproject.toml`; rationale: macOS ships 3.9 by default). When changing the minimum version, update: `README.md` (badge + install step), `src/magic.ts` (`PYTHON_REQUIREMENTS.Python.version`), `pyproject.toml` (`requires-python`). When changing the dev version, update `.python-version` and `pyproject.toml` `[tool.pyright] pythonVersion`.
-
-> **Never use `.github/copilot-instructions.md`. All agent instructions must be in `AGENTS.md` and referenced from here.**
-
-## 6. Example Patterns
-
-**Build Script Usage:**
-
-```sh
-# Preferred
-pnpm obsidian:install D:/path/to/vault
-# Or (if pnpm is not available)
-npm run obsidian:install D:/path/to/vault
+async def spawn_terminal() -> None:
+    ...
 ```
 
-**Localization Reference:**
+### Localization
+
+The plugin supports 51 languages. When adding new text:
+
+1. Add to `assets/locales/en/translation.json` first
+2. Use the i18n key pattern: `category.subcategory.key`
+3. Access via: `i18n.t("category.subcategory.key")`
+4. Run `pnpm run sync-locale-keys` to propagate to other languages
+
+Example:
 
 ```json
-"welcome": "Welcome, {{user}}!"
+// assets/locales/en/translation.json
+{
+  "settings": {
+    "terminal-options": "Terminal options"
+  }
+}
 ```
 
-Use as: `i18n.t("welcome", { user: "Alice" })`
-
-## 7. Agent Instructions Policy
-
-- **Always use `AGENTS.md` for all agent instructions and guidelines.**
-- For a one‑page quick reference, see `.github/instructions/workspace-instructions.md` (short agent quick‑start).
-- Do NOT use `.github/copilot-instructions.md` in this project.
-- All coding standards, workflow rules, and agent skills must be documented and referenced from `AGENTS.md` only.
-
-### Imports & module-loading policy 🔗
-
-- **Always use top-level static imports** for modules and types where possible. Use `import` and `import type` at the top of the file (immediately following any brief file-level documentation header). Placing imports at the top helps TypeScript and tools perform accurate static analysis and keeps dependency graphs consistent.
-- **Placement rule (explicit):** imports should be placed **before any other executable code** in the file. They may appear after a short file-level doc-comment or header but not after code that executes at module load time.
-- **Dynamic imports:** use `await import(...)` only when necessary (for example, to isolate a module under test after `vi.resetModules()` or to load resources conditionally at runtime). When you use a dynamic import in tests or runtime code, add a short comment explaining why the dynamic import is required.
-- **Testing note:** tests may legitimately import modules dynamically to reset module cache, apply mocks, or mock resource imports. Prefer keeping `import type` (type-only imports) at the top of test files when types are required by the test.
-- **Avoid reassignment of imported bindings.** If you need to replace a function on an imported module for tests, prefer mutating the module object (e.g., `Object.assign(lib, { fn: myFn })`) rather than reassigning the imported binding itself.
-- **Document exceptions:** If you must deviate from these rules, add a brief justification in a code comment or the test file header so reviewers can understand the rationale.
-
-- **Python modules & `__all__`:** Every Python module in this repository must declare a top-level `__all__` tuple (even if empty). Use a `tuple` (not a `list`) and place the assignment after top-level imports. Do not attempt to hide imported names by aliasing them with a leading underscore; explicit `__all__` controls the public surface. When changing module exports, add or update tests (see `tests/test_module_exports.py`) to reflect the new public API.
-
-Example (imports and types):
-
-```ts
-/** File header doc comment allowed here */
-import type { Settings } from "../src/settings-data.js"; // type-only import at top
-import { loadSettings } from "../src/settings.js"; // runtime import at top
-
-// Avoid placing executable logic (e.g., side-effects) above imports.
+```typescript
+// Usage
+const text = i18n.t("settings.terminal-options");
 ```
 
-Example (dynamic import justified in a test):
+## 5. Testing Guidelines
 
-```ts
-// Necessary for isolation after we set up mocks
-const { loadDocumentations } = await import("../../src/documentations.js");
+### Vitest Best Practices
+
+- Use `vi.fn()` for spies and stubs
+- Use `vi.mocked()` for typed module mocks
+- Use `vi.useFakeTimers()` for timer-based tests
+- Reset mocks in `afterEach`: `vi.restoreAllMocks()`
+
+Example:
+
+```typescript
+import { vi, describe, it, expect, afterEach } from "vitest";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
+it("should call handler", () => {
+  const handler = vi.fn();
+  triggerEvent(handler);
+  expect(handler).toHaveBeenCalledOnce();
+});
 ```
 
-- **Template merge guidance:** This repository is a template and its instruction files under `.agents/instructions/` may be periodically merged into repositories created from this template. For downstream repositories, prefer making minimal edits to template instruction files and, whenever practical, add a new repo-specific instruction file (for example, `.agents/instructions/<your-repo>.instructions.md`) to capture local overrides. Keeping template files minimally changed reduces merge conflicts when pulling upstream template changes; when a template file must be edited, document the rationale and link to a short issue or PR in your repository.
+### Test File Organization
 
-### Linked Instructions & Skills
+Follow the **one test file per source file** convention:
 
-- [.agents/instructions/typescript.instructions.md](./.agents/instructions/typescript.instructions.md) — TypeScript standards
-- [.agents/instructions/localization.instructions.md](./.agents/instructions/localization.instructions.md) — Localization rules
-- [.agents/instructions/commit-message.instructions.md](./.agents/instructions/commit-message.instructions.md) — Commit message convention
-- [.agents/skills/plugin-testing/SKILL.md](./.agents/skills/plugin-testing/SKILL.md) — Plugin testing skill
-- [.agents/instructions/agents.instructions.md](.agents/instructions/agents.instructions.md) — AI agent quick rules
+| Source                            | Test                                         |
+| --------------------------------- | -------------------------------------------- |
+| `src/magic.ts`                    | `tests/src/magic.spec.ts`                    |
+| `src/settings-data.ts`            | `tests/src/settings-data.spec.ts`            |
+| `src/terminal/emulator-addons.ts` | `tests/src/terminal/emulator-addons.spec.ts` |
+
+### Obsidian API Mocking
+
+Use the provided mock at `tests/mocks/obsidian.ts`:
+
+```typescript
+// In test file
+vi.mock("obsidian", async () => await vi.importActual("../mocks/obsidian.js"));
+
+// Setup test data
+const app = new App();
+// ... use mocked Obsidian API
+```
+
+## 6. Build System
+
+The build is managed by `scripts/build.mjs` using esbuild:
+
+- **Entry points**: `src/main.ts`, `src/styles.css`
+- **Output**: `main.js`, `styles.css` (in project root)
+- **Format**: CommonJS (for Obsidian compatibility)
+- **Target**: ES2018
+- **External**: obsidian, electron, node:* modules, @codemirror/*, @lezer/*
+- **Special loaders**:
+  - `.json` — bundled as JSON
+  - `.md`, `.py` — bundled as lazy-loaded text
+
+### Development Mode
+
+```bash
+pnpm run build:dev
+```
+
+Watches files and rebuilds automatically with inline source maps.
+
+### Production Mode
+
+```bash
+pnpm build
+```
+
+Runs checks, formats code, and creates optimized bundles.
+
+## 7. Commit Message Convention
+
+All commits must follow [Conventional Commits](https://www.conventionalcommits.org/):
+
+```text
+type(scope): short summary (≤72 chars)
+
+Optional body (wrap at 100 chars)
+
+Optional footer (BREAKING CHANGE, Refs, etc)
+```
+
+**Types:**
+
+- `feat`: New feature
+- `fix`: Bug fix
+- `chore`: Maintenance/build/tooling
+- `docs`: Documentation only
+- `refactor`: Code change that neither fixes a bug nor adds a feature
+- `test`: Adding or fixing tests
+- `style`: Formatting changes
+- `perf`: Performance improvement
+
+**Scopes:**
+
+- `terminal`: Terminal functionality
+- `settings`: Settings UI/data
+- `build`: Build scripts
+- `deps`: Dependencies
+- `i18n`: Translations
+- `profiles`: Profile system
+
+Example:
+
+```text
+feat(terminal): add support for custom color schemes
+
+- Added theme picker to profile settings
+- Implemented color scheme validation
+
+Refs: #123
+```
+
+Run `pnpm run commitlint` to validate commit messages locally.
+
+## 8. Integration Points
+
+### Obsidian API
+
+- Peer dependency via `@polyipseity/obsidian` (type definitions)
+- Runtime API from Obsidian app
+- View types registered via `registerView()`
+
+### @polyipseity/obsidian-plugin-library
+
+Provides:
+
+- `LanguageManager` — i18n management
+- `SettingsManager` — Settings persistence
+- `PluginContext` — Plugin interface contract
+- UI helpers — Modals, notices, settings UI
+- Utility functions — Platform detection, DOM helpers
+
+### xterm.js
+
+Terminal emulation with these addons:
+
+- `@xterm/addon-canvas` — Canvas renderer
+- `@xterm/addon-webgl` — WebGL renderer
+- `@xterm/addon-fit` — Auto-fit to container
+- `@xterm/addon-search` — Find in terminal
+- `@xterm/addon-ligatures` — Font ligatures
+- `@xterm/addon-unicode11` — Unicode 11 support
+- `@xterm/addon-web-links` — Clickable links
+- `@xterm/addon-serialize` — Terminal state serialization
+
+## 9. Security Considerations
+
+1. **Command Injection**: Profile executables and arguments are user-configured. The plugin passes these directly to `child_process.spawn()`.
+2. **Python Scripts**: The plugin embeds Python helper scripts (`unix_pseudoterminal.py`, `win32_resizer.py`) that execute with user-specified Python interpreter.
+3. **Developer Console**: Evaluates arbitrary JavaScript in the Obsidian context. This is intentional but sandboxed from system access.
+4. **Module Exposure**: The `exposeInternalModules` setting patches `require()` to expose Obsidian internals for the developer console.
+
+## 10. Common Tasks
+
+### Adding a New Setting
+
+1. Add to `Settings` interface in `src/settings-data.ts`
+2. Add default value in `Settings.DEFAULT`
+3. Add validation in `Settings.fix()`
+4. Add UI in `src/settings.ts`
+5. Add translation keys in `assets/locales/en/translation.json`
+6. Add tests in `tests/src/settings-data.spec.ts`
+
+### Adding a Terminal Addon
+
+1. Install: `pnpm add @xterm/addon-<name>`
+2. Import in `src/terminal/emulator.ts` or `src/terminal/emulator-addons.ts`
+3. Load addon in `XtermTerminalEmulator` or custom addon class
+4. Add tests
+
+### Adding a Translation
+
+1. Copy `assets/locales/en/` to `assets/locales/<lang>/`
+2. Update `assets/locales/<lang>/language.json` with native name
+3. Translate `translation.json`
+4. Add to `PluginLocales.RESOURCES` in `assets/locales.ts`
+5. Run `pnpm run sync-locale-keys` to validate
+
+## 11. Troubleshooting
+
+### Build Issues
+
+- **esbuild errors**: Check `package.json` for correct dependency versions
+- **Type errors**: Run `pnpm run check:eslint` and `pnpm run check:py`
+- **Lockfile issues**: Delete `node_modules` and `pnpm-lock.yaml`, then `pnpm install`
+
+### Runtime Issues
+
+- **Terminal not spawning**: Check Python installation (3.9+) and executable path in profile settings
+- **Windows terminal resize not working**: Ensure `pywinctl` and `psutil` are installed
+- **Developer console not evaluating**: Check browser console for syntax errors in evaluated code
+
+### Testing Issues
+
+- **Mock not working**: Ensure `vi.mock()` is at the top of the test file
+- **Type errors in tests**: Check `tests/tsconfig.test.json` configuration
 
 ---
 
-## 8. For AI Coding Agents 🤖 🔍
+For additional context, see:
 
-This section contains concise, actionable rules and project-specific examples to help AI agents be productive immediately.
-
-- **Always prefer `pnpm` over `npm`** for all package-manager commands (install, run, exec, etc.). Use `npm` only when `pnpm` is unavailable.
-- Read this file first. When in doubt, follow concrete examples in `src/`, `scripts/`, and `tests/` rather than generic advice.
-- Start by inspecting `src/main.ts`, `src/settings-data.ts`, and `assets/locales.ts` to learn core patterns: Manager classes (LanguageManager, SettingsManager), `.fix()` validators, and `PluginLocales` usage.
-- Settings pattern: always prefer `.fix()` functions (see `Settings.fix`/`LocalSettings.fix`) to validate/normalize external inputs before persisting or mutating settings.
-- I18n: use `createI18n(PluginLocales.RESOURCES, ...)` and `language.value.t(...)` for translations. Never hardcode translatable strings—use existing translation keys in `assets/locales/`.
-- Build/Dev pattern: `scripts/build.mjs` uses esbuild `context()`; pass `dev` as `argv[2]` to enable watch mode. Tests mock `esbuild` in `tests/scripts/build.test.mjs`—use those tests as canonical examples for safe refactors.
-- Script behavior: `scripts/obsidian-install.mjs` exits 1 with a short error message when `manifest.json` is missing. Make changes in scripts with tests mirroring error conditions (see `tests/scripts/obsidian-install.test.mjs`).
-- Test conventions: `*.spec.*` = unit (fast, isolated); `*.test.*` = integration (may use filesystem or child processes). Follow the one-test-file-per-source-file convention and place tests under `tests/` mirroring `src/`.
-- Formatting & linting: run `pnpm run format` and `pnpm run check` before committing. CI uses `pnpm install --frozen-lockfile`.
-- Commit rules for agents: use Conventional Commits; run `pnpm run commitlint` (prefer over npm) locally when appropriate. Keep headers ≤100 chars and wrap bodies at 100 chars.
-- Localization rule for agents: when adding text keys, update `assets/locales/en/translation.json` first and add tests or localization notes. Follow `.agents/instructions/localization.instructions.md`.
-- PR checklist (brief): add/modify tests, run `pnpm exec vitest run "tests/**/*.spec.{js,ts,mjs}"` locally for fast checks, run `pnpm run check`, add changeset when changing public API or version, and update `AGENTS.md` if you changed infra or agent-visible patterns.
-
-> Note: Keep suggestions and changes small and well-scoped. Prefer to add tests first for behavioral changes and follow the test naming conventions above.
-
----
-
-For unclear or incomplete sections, provide feedback to improve this guide for future agents.
+- `README.md` — User-facing documentation
+- `CHANGELOG.md` — Release history
+- `.agents/instructions/` — Detailed instruction files for specific topics

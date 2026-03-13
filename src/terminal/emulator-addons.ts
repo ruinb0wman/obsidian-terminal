@@ -664,6 +664,8 @@ export namespace RightClickActionAddon {
  *   xterm.js from sending ESC sequences.
  * - **Shift+Enter**: Sends ESC+CR for TUI apps that distinguish modified Enter.
  * - **Option+Arrow/Backspace/Delete**: Word navigation and deletion sequences.
+ * - **Ctrl+C**: Copy selected text to clipboard when there is a selection.
+ * - **Ctrl+V**: Paste text from clipboard.
  */
 export class CustomKeyEventHandlerAddon implements ITerminalAddon {
   #isDisposed = false;
@@ -677,14 +679,66 @@ export class CustomKeyEventHandlerAddon implements ITerminalAddon {
         return true;
       }
 
+      // Only handle keydown events for custom actions (paste/copy/option passthrough)
+      // For keyup/keypress events, return false when passthrough is enabled
+      // to prevent duplicate handling, otherwise let xterm.js handle normally
+      if (event.type !== "keydown") {
+        return this.isPassthroughEnabled() ? false : true;
+      }
+
       // Shift+Enter — all platforms, unconditional
       // Sends ESC+CR for TUI apps (Claude Code, etc.) that distinguish
       // modified Enter from plain CR. Consolidated here from emulator.ts
       // to avoid attachCustomKeyEventHandler conflict (last call wins).
       if (event.key === "Enter" && event.shiftKey) {
-        if (event.type === "keydown") {
-          terminal.input(`${ESC}\r`);
+        terminal.input(`${ESC}\r`);
+        return false;
+      }
+
+      // Ctrl+C: Copy selected text to clipboard (when there is a selection)
+      if (
+        event.key === "c" &&
+        event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey
+      ) {
+        if (terminal.hasSelection()) {
+          event.preventDefault();
+          void (async (): Promise<void> => {
+            try {
+              const selection = terminal.getSelection();
+              await activeSelf(terminal.element).navigator.clipboard.writeText(
+                selection,
+              );
+              terminal.clearSelection();
+            } catch (error) {
+              activeSelf(terminal.element).console.warn(error);
+            }
+          })();
+          return false;
         }
+        // No selection, let Ctrl+C pass through (e.g., for sending SIGINT to shell)
+        return true;
+      }
+
+      // Ctrl+V: Paste text from clipboard
+      if (
+        event.key === "v" &&
+        event.ctrlKey &&
+        !event.metaKey &&
+        !event.altKey
+      ) {
+        event.preventDefault();
+        void (async (): Promise<void> => {
+          try {
+            const text = await activeSelf(
+              terminal.element,
+            ).navigator.clipboard.readText();
+            terminal.paste(text);
+          } catch (error) {
+            activeSelf(terminal.element).console.warn(error);
+          }
+        })();
         return false;
       }
 
@@ -697,11 +751,6 @@ export class CustomKeyEventHandlerAddon implements ITerminalAddon {
       // Only intercept Option+key (not Option alone, not with Cmd/Ctrl)
       if (!event.altKey || event.metaKey || event.ctrlKey) {
         return true;
-      }
-
-      // Only handle keydown events (not keyup)
-      if (event.type !== "keydown") {
-        return false; // Block keyup to prevent duplicate handling
       }
 
       // Ignore the Option key press itself
